@@ -1,0 +1,18 @@
+{
+  "name": "web-synth",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "solid-js": "^1.9.0",
+    "hyasynth-engine": "/Users/reed/workspace/hyasynth-engine/pkg"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vite-plugin-solid": "^2.11.0"
+  }
+}
