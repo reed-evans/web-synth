@@ -17,7 +17,7 @@ export interface ParamDef {
 
 export interface GraphNode {
   id: string;
-  typeId: number; // engine type ID (for UI identification)
+  typeId: number; // engine type ID
   type: string;
   label: string;
   x: number;
@@ -26,7 +26,6 @@ export interface GraphNode {
   inputs: Port[];
   outputs: Port[];
   color: [number, number, number];
-  data: Record<string, unknown>;
   params: ParamDef[];
 }
 
@@ -36,14 +35,29 @@ export interface Edge {
   to: { nodeId: string; portId: string };
 }
 
+export interface PortTemplate {
+  name: string;
+  dataType: string;
+  index: number;
+}
+
+export interface ParamTemplate {
+  paramId: number;
+  name: string;
+  defaultValue: number;
+  min: number;
+  max: number;
+  step: number;
+}
+
 export interface NodeTemplate {
   type: string;
   label: string;
   typeId: number;
-  inputs: { name: string; dataType: string; index: number }[];
-  outputs: { name: string; dataType: string; index: number }[];
+  inputs: PortTemplate[];
+  outputs: PortTemplate[];
   color: [number, number, number];
-  params: { paramId: number; name: string; defaultValue: number; min: number; max: number; step: number }[];
+  params: ParamTemplate[];
 }
 
 export interface ModRoute {
@@ -62,20 +76,20 @@ export interface PendingEdge {
   toY: number;
 }
 
-export const NODE_WIDTH = 150;
-export const STRIP_HEIGHT = 8;
-export const LABEL_HEIGHT = 24;
-export const PORT_HEIGHT = 7;
-export const PORT_RADIUS = 5;
-export const NODE_HEIGHT = STRIP_HEIGHT + LABEL_HEIGHT + STRIP_HEIGHT;
+export const NODE_WIDTH = 160;
+export const NODE_HEIGHT = 64;
+export const PORT_RADIUS = 4;
+
+/** Evenly spaces ports across the full node width. */
+export function portX(index: number, count: number, width = NODE_WIDTH): number {
+  return (index + 1) * width / (count + 1);
+}
 
 export function getPortPosition(node: GraphNode, portId: string): { x: number; y: number } {
   const ii = node.inputs.findIndex(p => p.id === portId);
   if (ii >= 0) {
-    const n = node.inputs.length;
-    return { x: node.x + (ii + 1) * node.width / (n + 1), y: node.y };
+    return { x: node.x + portX(ii, node.inputs.length, node.width), y: node.y };
   }
   const oi = node.outputs.findIndex(p => p.id === portId);
-  const n = node.outputs.length;
-  return { x: node.x + (oi + 1) * node.width / (n + 1), y: node.y + NODE_HEIGHT };
+  return { x: node.x + portX(oi, node.outputs.length, node.width), y: node.y + NODE_HEIGHT };
 }

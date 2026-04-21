@@ -4,11 +4,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "solid-js": "^1.9.0",
-    "hyasynth-engine": "/Users/reed/workspace/hyasynth-engine/pkg"
+    "hyasynth-engine": "github:reed-evans/hyasynth-engine#dist"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

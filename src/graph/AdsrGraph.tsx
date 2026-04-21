@@ -1,8 +1,14 @@
+import { createMemo, For } from 'solid-js';
 import type { GraphNode } from './types';
 
 interface AdsrVizProps {
   node: GraphNode;
 }
+
+const W = 232;
+const H = 92;
+const PAD = 10;
+const STEPS = 24;
 
 // Matches the engine's bezier_shape() in envelope.rs
 function bezierShape(t: number, start: number, end: number, curve: number): number {
@@ -11,26 +17,23 @@ function bezierShape(t: number, start: number, end: number, curve: number): numb
   return inv * inv * start + 2.0 * inv * t * cp + t * t * end;
 }
 
+function toPath(pts: ReadonlyArray<readonly [number, number]>): string {
+  return 'M ' + pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ');
+}
+
 export default function AdsrGraph(props: AdsrVizProps) {
-  const W = 180;
-  const H = 80;
-  const PAD = 8;
+  const param = (name: string): number =>
+    props.node.params.find(p => p.name === name)?.value ?? 0;
 
-  const param = (name: string) => {
-    const p = props.node.params.find(p => p.name === name);
-    return p ? p.value : 0;
-  };
-
-  const points = () => {
-    const attack = param('attack');
-    const decay = param('decay');
+  const geometry = createMemo(() => {
+    const attack  = param('attack');
+    const decay   = param('decay');
     const sustain = param('sustain');
     const release = param('release');
-    const atkCrv = param('atk crv');
-    const decCrv = param('dec crv');
-    const relCrv = param('rel crv');
+    const atkCrv  = param('atk crv');
+    const decCrv  = param('dec crv');
+    const relCrv  = param('rel crv');
 
-    // Normalize time segments to fit the width
     const sustainDur = Math.max(attack, decay, release) * 0.4;
     const total = attack + decay + sustainDur + release;
 
@@ -38,87 +41,87 @@ export default function AdsrGraph(props: AdsrVizProps) {
     const gh = H - PAD * 2;
 
     const x0 = PAD;
-    const y0 = PAD + gh; // bottom (amplitude 0)
-
+    const y0 = PAD + gh;
     const xA = x0 + (attack / total) * gw;
     const xD = xA + (decay / total) * gw;
     const xS = xD + (sustainDur / total) * gw;
     const xR = xS + (release / total) * gw;
-
-    const yTop = PAD;           // amplitude 1
+    const yTop = PAD;
     const ySus = PAD + (1 - sustain) * gh;
 
-    // Generate path segments with bezier curves
-    const steps = 24;
-    const pts: [number, number][] = [[x0, y0]];
+    const sampleCurve = (
+      fromX: number, toX: number, fromAmp: number, toAmp: number, curve: number,
+    ): Array<[number, number]> => {
+      const out: Array<[number, number]> = [];
+      for (let i = 1; i <= STEPS; i++) {
+        const t = i / STEPS;
+        const amp = bezierShape(t, fromAmp, toAmp, curve);
+        out.push([fromX + t * (toX - fromX), PAD + (1 - amp) * gh]);
+      }
+      return out;
+    };
 
-    // Attack: 0 -> 1
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const amp = bezierShape(t, 0, 1, atkCrv);
-      pts.push([x0 + t * (xA - x0), PAD + (1 - amp) * gh]);
-    }
-
-    // Decay: 1 -> sustain
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const amp = bezierShape(t, 1, sustain, decCrv);
-      pts.push([xA + t * (xD - xA), PAD + (1 - amp) * gh]);
-    }
-
-    // Release: sustain -> 0
-    const relPts: [number, number][] = [];
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const amp = bezierShape(t, sustain, 0, relCrv);
-      relPts.push([xS + t * (xR - xS), PAD + (1 - amp) * gh]);
-    }
-
-    // Build SVG path
-    const curvePath = 'M ' + pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ');
-    // Sustain dashed segment
-    const susStart: [number, number] = [xD, ySus];
-    const susEnd: [number, number] = [xS, ySus];
-    const susPath = `M ${susStart[0].toFixed(1)},${susStart[1].toFixed(1)} L ${susEnd[0].toFixed(1)},${susEnd[1].toFixed(1)}`;
-    // Release path
-    const relPath = `M ${xS.toFixed(1)},${ySus.toFixed(1)} L ` + relPts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ');
-
-    // Key dots: start, peak, sustain start, sustain end, end
-    const dots: [number, number][] = [
-      [x0, y0],
-      [xA, yTop],
-      [xD, ySus],
-      [xS, ySus],
-      [xR, y0],
+    const ad = [[x0, y0] as [number, number],
+      ...sampleCurve(x0, xA, 0, 1, atkCrv),
+      ...sampleCurve(xA, xD, 1, sustain, decCrv),
     ];
 
-    return { curvePath, susPath, relPath, dots };
-  };
+    const rel: Array<[number, number]> = [
+      [xS, ySus],
+      ...sampleCurve(xS, xR, sustain, 0, relCrv),
+    ];
+
+    const dots: Array<[number, number]> = [
+      [x0, y0], [xA, yTop], [xD, ySus], [xS, ySus], [xR, y0],
+    ];
+
+    return {
+      curvePath: toPath(ad),
+      susPath: `M ${xD.toFixed(1)},${ySus.toFixed(1)} L ${xS.toFixed(1)},${ySus.toFixed(1)}`,
+      relPath: toPath(rel),
+      dots,
+    };
+  });
+
+  const midY = PAD + (H - PAD * 2) / 2;
 
   return (
-    <svg
-      width={W}
-      height={H}
-      style={{ display: 'block', 'margin-bottom': '4px', 'pointer-events': 'none' }}
-    >
-      {/* Background */}
-      <rect x="0" y="0" width={W} height={H} rx="3" fill="#0d1525" />
-      {/* Grid lines */}
-      <line x1={PAD} y1={PAD} x2={W - PAD} y2={PAD} stroke="#1a2a44" stroke-width="0.5" />
-      <line x1={PAD} y1={PAD + (H - PAD * 2) / 2} x2={W - PAD} y2={PAD + (H - PAD * 2) / 2} stroke="#1a2a44" stroke-width="0.5" />
-      <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="#1a2a44" stroke-width="0.5" />
-
-      {/* Attack + Decay curve */}
-      <path d={points().curvePath} fill="none" stroke="#5ba4cf" stroke-width="1.5" stroke-linejoin="round" />
-      {/* Sustain dashed */}
-      <path d={points().susPath} fill="none" stroke="#5ba4cf" stroke-width="1.5" stroke-dasharray="4,3" />
-      {/* Release curve */}
-      <path d={points().relPath} fill="none" stroke="#5ba4cf" stroke-width="1.5" stroke-linejoin="round" />
-
-      {/* Dots at key points */}
-      {points().dots.map(([cx, cy]) => (
-        <circle cx={cx} cy={cy} r="3" fill="#5ba4cf" />
-      ))}
+    <svg class="adsr-graph" width={W} height={H}>
+      <rect
+        x="0.5" y="0.5"
+        width={W - 1} height={H - 1}
+        rx="4"
+        fill="var(--color-surface-recess)"
+        stroke="var(--color-border)"
+        stroke-width="1"
+      />
+      <line
+        x1={PAD} y1={midY} x2={W - PAD} y2={midY}
+        stroke="var(--color-border)" stroke-width="1" stroke-dasharray="1 3"
+      />
+      <path
+        d={geometry().curvePath}
+        fill="none" stroke="var(--cat-mod)" stroke-width="1.5"
+        stroke-linejoin="round" stroke-linecap="round"
+      />
+      <path
+        d={geometry().susPath}
+        fill="none" stroke="var(--cat-mod)" stroke-width="1.5"
+        stroke-dasharray="3 3" stroke-linecap="round" opacity="0.6"
+      />
+      <path
+        d={geometry().relPath}
+        fill="none" stroke="var(--cat-mod)" stroke-width="1.5"
+        stroke-linejoin="round" stroke-linecap="round"
+      />
+      <For each={geometry().dots}>
+        {([cx, cy]) => (
+          <circle
+            cx={cx} cy={cy} r="2.5"
+            fill="var(--color-surface)" stroke="var(--cat-mod)" stroke-width="1.25"
+          />
+        )}
+      </For>
     </svg>
   );
 }

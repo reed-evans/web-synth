@@ -1,79 +1,114 @@
 import type { GraphNode, Edge, PendingEdge } from './types';
 import { getPortPosition } from './types';
+import { categoryForType } from './nodeCategory';
 
 const VERT = `
   attribute vec2 a_pos;
   attribute vec4 a_col;
-  attribute float a_dist;
+  attribute float a_side;
   uniform vec2 u_res;
   varying vec4 v_col;
-  varying float v_dist;
+  varying float v_side;
   void main() {
     vec2 c = (a_pos / u_res) * 2.0 - 1.0;
     gl_Position = vec4(c.x, -c.y, 0.0, 1.0);
     v_col = a_col;
-    v_dist = a_dist;
+    v_side = a_side;
   }
 `;
 
 const FRAG = `
+  #extension GL_OES_standard_derivatives : enable
   precision mediump float;
   varying vec4 v_col;
-  varying float v_dist;
-  uniform float u_time;
+  varying float v_side;
   void main() {
-    float wave = sin(v_dist * 0.35 - u_time * 3.5);
-    float stripe = smoothstep(-0.15, 0.15, wave);
-    gl_FragColor = mix(v_col * 0.55, v_col, stripe);
+    float d = abs(v_side);
+    float aa = fwidth(d);
+    float alpha = (1.0 - smoothstep(1.0 - aa, 1.0, d)) * v_col.a;
+    if (alpha <= 0.0) discard;
+    gl_FragColor = vec4(v_col.rgb * alpha, alpha);
   }
 `;
 
-// 7 floats per vertex: x, y, r, g, b, a, dist
+// Per-vertex layout: x, y, r, g, b, a, side (-1 or +1 across cord width)
 const FLOATS_PER_VERT = 7;
-const STRIDE = FLOATS_PER_VERT * 4; // 28 bytes
+const STRIDE = FLOATS_PER_VERT * 4;
+const BEZIER_SEGS = 48;
+const CORD_THICKNESS = 3.5;
+const PENDING_ALPHA = 0.6;
 
-function pushLine(
-  v: number[],
-  x1: number, y1: number, x2: number, y2: number,
-  thick: number,
-  r: number, g: number, b: number, a: number,
-  d1: number, d2: number,
-) {
-  const dx = x2 - x1, dy = y2 - y1;
-  const len = Math.sqrt(dx * dx + dy * dy);
-  if (len === 0) return;
-  const nx = (-dy / len) * thick * 0.5, ny = (dx / len) * thick * 0.5;
-  v.push(
-    x1 + nx, y1 + ny, r, g, b, a, d1,
-    x1 - nx, y1 - ny, r, g, b, a, d1,
-    x2 + nx, y2 + ny, r, g, b, a, d2,
-    x2 + nx, y2 + ny, r, g, b, a, d2,
-    x1 - nx, y1 - ny, r, g, b, a, d1,
-    x2 - nx, y2 - ny, r, g, b, a, d2,
-  );
+interface BezierOpts {
+  x1: number; y1: number; x2: number; y2: number;
+  r: number; g: number; b: number; a: number;
+  thickness: number;
 }
 
-function pushBezier(
-  v: number[],
-  x1: number, y1: number, x2: number, y2: number,
-  thick: number,
-  r: number, g: number, b: number, a: number,
-) {
-  const segs = 24;
-  const off = Math.max(Math.abs(y2 - y1) * 0.5, 50);
-  const cp1x = x1, cp1y = y1 + off, cp2x = x2, cp2y = y2 - off;
-  let px = x1, py = y1;
-  let dist = 0;
-  for (let i = 1; i <= segs; i++) {
-    const t = i / segs, mt = 1 - t;
-    const mt2 = mt * mt, mt3 = mt2 * mt, t2 = t * t, t3 = t2 * t;
-    const nx = mt3 * x1 + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t3 * x2;
-    const ny = mt3 * y1 + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t3 * y2;
-    const segLen = Math.sqrt((nx - px) ** 2 + (ny - py) ** 2);
-    pushLine(v, px, py, nx, ny, thick, r, g, b, a, dist, dist + segLen);
-    dist += segLen;
-    px = nx; py = ny;
+function pushBezier(v: number[], opts: BezierOpts) {
+  const { x1, y1, x2, y2, r, g, b, a, thickness } = opts;
+  const off = Math.max(Math.abs(y2 - y1) * 0.5, 40);
+  const cp1x = x1, cp1y = y1 + off;
+  const cp2x = x2, cp2y = y2 - off;
+  const half = thickness * 0.5;
+
+  const lx: number[] = [], ly: number[] = [];
+  const rx: number[] = [], ry: number[] = [];
+
+  for (let i = 0; i <= BEZIER_SEGS; i++) {
+    const t = i / BEZIER_SEGS, mt = 1 - t;
+    const mt2 = mt * mt, t2 = t * t;
+    const px = mt2 * mt * x1 + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t2 * t * x2;
+    const py = mt2 * mt * y1 + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t2 * t * y2;
+    const dx = 3 * mt2 * (cp1x - x1) + 6 * mt * t * (cp2x - cp1x) + 3 * t2 * (x2 - cp2x);
+    const dy = 3 * mt2 * (cp1y - y1) + 6 * mt * t * (cp2y - cp1y) + 3 * t2 * (y2 - cp2y);
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    lx.push(px + nx * half); ly.push(py + ny * half);
+    rx.push(px - nx * half); ry.push(py - ny * half);
   }
+
+  for (let i = 0; i < BEZIER_SEGS; i++) {
+    const plx = lx[i], ply = ly[i], prx = rx[i], pry = ry[i];
+    const qlx = lx[i + 1], qly = ly[i + 1], qrx = rx[i + 1], qry = ry[i + 1];
+    v.push(
+      plx, ply, r, g, b, a,  1,
+      prx, pry, r, g, b, a, -1,
+      qlx, qly, r, g, b, a,  1,
+      qlx, qly, r, g, b, a,  1,
+      prx, pry, r, g, b, a, -1,
+      qrx, qry, r, g, b, a, -1,
+    );
+  }
+}
+
+function compileShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader {
+  const sh = gl.createShader(type)!;
+  gl.shaderSource(sh, source);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(sh);
+    gl.deleteShader(sh);
+    throw new Error(`shader compile failed: ${log}`);
+  }
+  return sh;
+}
+
+function linkProgram(gl: WebGLRenderingContext, vs: WebGLShader, fs: WebGLShader): WebGLProgram {
+  const p = gl.createProgram()!;
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(p);
+    gl.deleteProgram(p);
+    throw new Error(`program link failed: ${log}`);
+  }
+  return p;
+}
+
+export interface RendererOptions {
+  /** Kept for API compatibility; no motion is currently emitted. */
+  reducedMotion?: boolean;
 }
 
 export class EdgeRenderer {
@@ -82,39 +117,34 @@ export class EdgeRenderer {
   private buffer: WebGLBuffer;
   private posLoc: number;
   private colLoc: number;
-  private distLoc: number;
+  private sideLoc: number;
   private resLoc: WebGLUniformLocation;
-  private timeLoc: WebGLUniformLocation;
   private dpr: number;
 
-  constructor(canvas: HTMLCanvasElement, dpr = 1) {
-    const gl = canvas.getContext('webgl', { antialias: true, alpha: true })!;
+  constructor(canvas: HTMLCanvasElement, dpr = 1, _options: RendererOptions = {}) {
+    const gl = canvas.getContext('webgl', { antialias: true, alpha: true, premultipliedAlpha: true });
+    if (!gl) throw new Error('WebGL is not available in this browser');
     this.gl = gl;
     this.dpr = dpr;
 
-    const vs = gl.createShader(gl.VERTEX_SHADER)!;
-    gl.shaderSource(vs, VERT);
-    gl.compileShader(vs);
+    gl.getExtension('OES_standard_derivatives');
 
-    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
-    gl.shaderSource(fs, FRAG);
-    gl.compileShader(fs);
-
-    this.program = gl.createProgram()!;
-    gl.attachShader(this.program, vs);
-    gl.attachShader(this.program, fs);
-    gl.linkProgram(this.program);
+    const vs = compileShader(gl, gl.VERTEX_SHADER, VERT);
+    const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAG);
+    this.program = linkProgram(gl, vs, fs);
 
     this.posLoc = gl.getAttribLocation(this.program, 'a_pos');
     this.colLoc = gl.getAttribLocation(this.program, 'a_col');
-    this.distLoc = gl.getAttribLocation(this.program, 'a_dist');
+    this.sideLoc = gl.getAttribLocation(this.program, 'a_side');
     this.resLoc = gl.getUniformLocation(this.program, 'u_res')!;
-    this.timeLoc = gl.getUniformLocation(this.program, 'u_time')!;
     this.buffer = gl.createBuffer()!;
 
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   }
+
+  // No-op, retained for API compatibility with the canvas' media-query listener.
+  setReducedMotion(_value: boolean) { /* intentionally empty */ }
 
   render(nodes: GraphNode[], edges: Edge[], pendingEdge: PendingEdge | null) {
     const gl = this.gl;
@@ -124,24 +154,29 @@ export class EdgeRenderer {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.program);
     gl.uniform2f(this.resLoc, w / this.dpr, h / this.dpr);
-    gl.uniform1f(this.timeLoc, performance.now() / 1000);
 
+    const nodeById = new Map(nodes.map(n => [n.id, n]));
     const v: number[] = [];
 
     for (const edge of edges) {
-      const fn = nodes.find(n => n.id === edge.from.nodeId);
-      const tn = nodes.find(n => n.id === edge.to.nodeId);
+      const fn = nodeById.get(edge.from.nodeId);
+      const tn = nodeById.get(edge.to.nodeId);
       if (!fn || !tn) continue;
       const fp = getPortPosition(fn, edge.from.portId);
       const tp = getPortPosition(tn, edge.to.portId);
-      pushBezier(v, fp.x, fp.y, tp.x, tp.y, 2.5, 0.7, 0.75, 0.85, 0.85);
+      const [r, g, b] = categoryForType(fn.type).rgb;
+      pushBezier(v, { x1: fp.x, y1: fp.y, x2: tp.x, y2: tp.y, r, g, b, a: 1.0, thickness: CORD_THICKNESS });
     }
 
     if (pendingEdge) {
-      const fn = nodes.find(n => n.id === pendingEdge.fromNodeId);
+      const fn = nodeById.get(pendingEdge.fromNodeId);
       if (fn) {
         const fp = getPortPosition(fn, pendingEdge.fromPortId);
-        pushBezier(v, fp.x, fp.y, pendingEdge.toX, pendingEdge.toY, 2, 0.7, 0.75, 0.85, 0.4);
+        const [r, g, b] = categoryForType(fn.type).rgb;
+        pushBezier(v, {
+          x1: fp.x, y1: fp.y, x2: pendingEdge.toX, y2: pendingEdge.toY,
+          r, g, b, a: PENDING_ALPHA, thickness: CORD_THICKNESS,
+        });
       }
     }
 
@@ -153,8 +188,8 @@ export class EdgeRenderer {
     gl.vertexAttribPointer(this.posLoc, 2, gl.FLOAT, false, STRIDE, 0);
     gl.enableVertexAttribArray(this.colLoc);
     gl.vertexAttribPointer(this.colLoc, 4, gl.FLOAT, false, STRIDE, 8);
-    gl.enableVertexAttribArray(this.distLoc);
-    gl.vertexAttribPointer(this.distLoc, 1, gl.FLOAT, false, STRIDE, 24);
+    gl.enableVertexAttribArray(this.sideLoc);
+    gl.vertexAttribPointer(this.sideLoc, 1, gl.FLOAT, false, STRIDE, 24);
     gl.drawArrays(gl.TRIANGLES, 0, v.length / FLOATS_PER_VERT);
   }
 }

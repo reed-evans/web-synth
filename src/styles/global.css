@@ -1,0 +1,106 @@
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  min-height: 100vh;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+*:focus {
+  outline: none;
+}
+
+*:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-1);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-dim);
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
+.boot-status {
+  font: var(--weight-regular) var(--text-sm)/1.4 var(--font-mono);
+  color: var(--color-text-muted);
+  padding: var(--space-8);
+}
+
+/* Port hover tooltip */
+.port-tip {
+  position: relative;
+}
+
+.port-tip::before {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font: var(--weight-medium) var(--text-2xs)/1 var(--font-mono);
+  color: var(--color-text);
+  background: var(--color-surface-hi);
+  border: 1px solid var(--color-border);
+  padding: 3px 6px;
+  border-radius: var(--radius-1);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+  z-index: 20;
+}
+
+.port-tip-top::before {
+  bottom: calc(100% + 6px);
+}
+
+.port-tip-bottom::before {
+  top: calc(100% + 6px);
+}
+
+.port-tip:hover::before {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,189 +1,130 @@
-import type { GraphNode } from './types';
-import { NODE_WIDTH, STRIP_HEIGHT, PORT_HEIGHT, LABEL_HEIGHT, PORT_RADIUS } from './types';
+import { For } from 'solid-js';
+import type { GraphNode, ParamDef } from './types';
+import { NODE_WIDTH, portX } from './types';
+import { categoryForType } from './nodeCategory';
+import './node.css';
 
 interface NodeProps {
   node: GraphNode;
   selected: boolean;
   connectedPorts: Set<string>;
+  /** Map from input portId → category CSS var of the source node feeding it. */
+  inputSourceColors: Record<string, string>;
+  pendingTargetPortIds?: Set<string>;
+  receivable?: 'yes' | 'no' | 'none';
   onHeaderMouseDown: (nodeId: string, e: MouseEvent) => void;
   onOutputMouseDown: (nodeId: string, portId: string, e: MouseEvent) => void;
   onInputMouseUp: (nodeId: string, portId: string, e: MouseEvent) => void;
   onInputRightClick: (nodeId: string, portId: string, e: MouseEvent) => void;
+  onSelect?: (nodeId: string) => void;
 }
 
-// Inject tooltip CSS once
-let styleInjected = false;
-function injectTooltipStyle() {
-  if (styleInjected) return;
-  styleInjected = true;
-  const style = document.createElement('style');
-  style.textContent = `
-    .port-tip { position: relative; }
-    .port-tip::after {
-      content: attr(data-tip);
-      position: absolute;
-      left: 50%;
-      transform: translateX(-50%);
-      padding: 2px 6px;
-      background: #222;
-      color: #ddd;
-      font: 10px monospace;
-      border-radius: 3px;
-      white-space: nowrap;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.1s;
-      z-index: 100;
-    }
-    .port-tip-top::after { bottom: 100%; margin-bottom: 2px; }
-    .port-tip-bottom::after { top: 100%; margin-top: 2px; }
-    .port-tip:hover::after { opacity: 1; }
-  `;
-  document.head.appendChild(style);
+// Param names where the first-param preview should format as frequency.
+const FREQ_PARAMS = new Set(['freq', 'cutoff', 'rate']);
+// Param names where the preview should format as seconds.
+const TIME_PARAMS = new Set(['time', 'attack', 'decay', 'release']);
+
+function formatMagnitude(v: number): string {
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`;
+  if (v >= 100) return Math.round(v).toString();
+  return v.toFixed(2);
+}
+
+function paramPreview(params: ParamDef[]): string | null {
+  const first = params[0];
+  if (!first) return null;
+  if (FREQ_PARAMS.has(first.name)) return `${formatMagnitude(first.value)} Hz`;
+  if (TIME_PARAMS.has(first.name)) return `${first.value.toFixed(2)}s`;
+  return `${first.name} ${formatMagnitude(first.value)}`;
 }
 
 export default function Node(props: NodeProps) {
-  injectTooltipStyle();
   const n = () => props.node;
-  const labelColor = () => {
-    const [r, g, b] = n().color.map(c => Math.round(c * 255));
-    // return `rgb(${r},${g},${b})`;
-    return `rgb(40, 40, 40)`;
-  };
-  const stripColor = () => {
-    const [r, g, b] = n().color.map(c => Math.round(c * 160));
-    // return `rgb(${r},${g},${b})`;
-    return `rgb(100, 100, 100)`;
-  };
+  const cat = () => categoryForType(n().type);
+  const preview = () => paramPreview(n().params);
+
+  const receivableAttr = () =>
+    !props.receivable || props.receivable === 'none' ? undefined : props.receivable;
 
   return (
     <div
+      class="node"
+      role="group"
+      tabindex={0}
+      aria-label={`${n().label} module`}
+      data-selected={props.selected ? 'true' : 'false'}
+      data-receivable={receivableAttr()}
       style={{
-        position: 'absolute',
         left: n().x + 'px',
         top: n().y + 'px',
-        width: NODE_WIDTH + 'px',
-        overflow: 'visible',
-        'pointer-events': 'auto',
-        'user-select': 'none',
-        'box-shadow': props.selected ? '0 0 0 2px #ffd700' : 'none',
-      'z-index': '2',
+        '--node-width': NODE_WIDTH + 'px',
+        '--node-cat-color': `var(${cat().cssVar})`,
       }}
-      onMouseDown={(e: MouseEvent) => {
+      onMouseDown={(e) => {
         e.stopPropagation();
         props.onHeaderMouseDown(n().id, e);
       }}
+      onClick={() => props.onSelect?.(n().id)}
     >
-      {/* Input strip (top) */}
-      <div style={{
-        height: STRIP_HEIGHT + 'px',
-        background: stripColor(),
-        position: 'relative',
-      }}>
-        {n().inputs.map((inp, i) => {
-          const count = n().inputs.length;
-          const x = (i + 1) * NODE_WIDTH / (count + 1);
-          return (
-            <span
-              class="port-tip port-tip-top"
-              data-tip={inp.name}
-              style={{
-                position: 'absolute',
-                width: PORT_HEIGHT * 2 + 'px',
-                height: PORT_HEIGHT + 'px',
-                'border-radius': `0 0 ${PORT_HEIGHT}px ${PORT_HEIGHT}px`,
-                background: props.connectedPorts.has(inp.id) ? '#FFB7A8' : '#aaa',
-                left: (x - PORT_HEIGHT) + 'px',
-                cursor: 'pointer',
-              }}>
-            <span
-              style={{
-                position: 'absolute',
-                width: PORT_RADIUS * 2 + 'px',
-                height: PORT_RADIUS + 'px',
-                'border-radius': `0 0 ${PORT_RADIUS}px ${PORT_RADIUS}px`,
-                background: '#000',
-                left: (PORT_HEIGHT - PORT_RADIUS) + 'px',
-                cursor: 'pointer',
-              }}
-              onMouseDown={(e: MouseEvent) => e.stopPropagation()}
-              onMouseUp={(e: MouseEvent) => {
-                e.stopPropagation();
-                props.onInputMouseUp(n().id, inp.id, e);
-              }}
-              onContextMenu={(e: MouseEvent) => {
-                e.stopPropagation();
-                props.onInputRightClick(n().id, inp.id, e);
-              }}
-            />
-            </span>
-          );
-        })}
+      <div class="node__body">
+        <div class="node__meta">
+          <span class="node__cat-dot" aria-hidden="true" />
+          <span class="node__cat-label">{cat().label}</span>
+        </div>
+        <div class="node__label">{n().label}</div>
+        {preview() && <div class="node__preview">{preview()}</div>}
       </div>
 
-      {/* Label (middle) */}
-      <div
-        style={{
-          height: LABEL_HEIGHT + 'px',
-          background: labelColor(),
-          display: 'flex',
-          'align-items': 'center',
-          'justify-content': 'center',
-          color: '#fff',
-          font: 'bold 12px monospace',
-          cursor: 'grab',
-        }}
-        onMouseDown={(e: MouseEvent) => {
-          e.stopPropagation();
-          props.onHeaderMouseDown(n().id, e);
-        }}
-      >
-        {n().label}
-      </div>
+      {/* Input ports — pinned to the top edge */}
+      <For each={n().inputs}>
+        {(inp, i) => (
+          <span
+            class="port port--input port-tip port-tip-top"
+            role="button"
+            aria-label={`input ${inp.name}`}
+            tabindex={-1}
+            data-tip={inp.name}
+            data-connected={props.connectedPorts.has(inp.id) ? 'true' : 'false'}
+            data-pending-target={props.pendingTargetPortIds?.has(inp.id) ? 'true' : 'false'}
+            style={{
+              left: portX(i(), n().inputs.length) + 'px',
+              '--port-signal-color': props.inputSourceColors[inp.id] ?? '',
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseUp={(e) => {
+              e.stopPropagation();
+              props.onInputMouseUp(n().id, inp.id, e);
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              props.onInputRightClick(n().id, inp.id, e);
+            }}
+          />
+        )}
+      </For>
 
-      {/* Output strip (bottom) */}
-      <div style={{
-        height: STRIP_HEIGHT + 'px',
-        background: stripColor(),
-        position: 'relative',
-      }}>
-        {n().outputs.map((out, i) => {
-          const count = n().outputs.length;
-          const x = (i + 1) * NODE_WIDTH / (count + 1);
-          return (
-            <span
-              class="port-tip port-tip-bottom"
-              data-tip={out.name}
-              style={{
-                position: 'absolute',
-                width: PORT_HEIGHT * 2 + 'px',
-                height: PORT_HEIGHT + 'px',
-                'border-radius': `${PORT_HEIGHT}px ${PORT_HEIGHT}px 0 0`,
-                background: props.connectedPorts.has(out.id) ? '#DBFF83' : '#aaa',
-                left: (x - PORT_HEIGHT) + 'px',
-                bottom: 0 + 'px',
-                cursor: 'pointer',
-              }}>
-            <span
-              style={{
-                position: 'absolute',
-                width: PORT_RADIUS * 2 + 'px',
-                height: PORT_RADIUS + 'px',
-                'border-radius': `${PORT_RADIUS}px ${PORT_RADIUS}px 0 0`,
-                background: '#000',
-                left: (PORT_HEIGHT - PORT_RADIUS) + 'px',
-                bottom: 0 + 'px',
-                cursor: 'pointer',
-              }}
-              onMouseDown={(e: MouseEvent) => {
-                e.stopPropagation();
-                props.onOutputMouseDown(n().id, out.id, e);
-              }}
-            />
-            </span>
-          );
-        })}
-      </div>
+      {/* Output ports — pinned to the bottom edge */}
+      <For each={n().outputs}>
+        {(out, i) => (
+          <span
+            class="port port--output port-tip port-tip-bottom"
+            role="button"
+            aria-label={`output ${out.name}`}
+            tabindex={-1}
+            data-tip={out.name}
+            data-connected={props.connectedPorts.has(out.id) ? 'true' : 'false'}
+            style={{
+              left: portX(i(), n().outputs.length) + 'px',
+              '--port-signal-color': `var(${cat().cssVar})`,
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              props.onOutputMouseDown(n().id, out.id, e);
+            }}
+          />
+        )}
+      </For>
     </div>
   );
 }

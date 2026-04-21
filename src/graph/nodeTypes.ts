@@ -1,255 +1,214 @@
 import {
-  node_sine_osc, node_saw_osc, node_square_osc, node_triangle_osc,
+  node_sine_osc, node_saw_osc, node_square_osc, node_triangle_osc, node_phase_osc,
   node_adsr_env, node_gain, node_pan, node_mixer, node_output,
   node_lowpass, node_highpass, node_bandpass, node_notch,
   node_lfo, node_transport, node_delay, node_reverb, node_audio_player,
-  param_freq, param_detune, param_phase, param_pulse_width, param_mode,
+  param_freq, param_detune, param_pulse_width, param_mode,
   param_gain, param_pan,
   param_attack, param_decay, param_sustain, param_release,
   param_attack_curve, param_decay_curve, param_release_curve,
   param_cutoff, param_resonance, param_key_tracking,
   param_rate, param_depth, param_waveform,
   param_time, param_feedback, param_mix, param_reverb_decay, param_damping,
+  param_osc_key_tracking, param_pitch_offset, param_stereo_detune,
+  param_shape, param_algorithm, param_po_feedback, param_formant,
+  param_po_key_tracking, param_pitch_ratio_num, param_pitch_ratio_den, param_po_detune,
 } from 'hyasynth-engine';
-import type { NodeTemplate } from './types';
+import type { NodeTemplate, ParamTemplate, PortTemplate } from './types';
 
-const audio = 'audio';
+const AUDIO = 'audio';
 
-// Raw param IDs not yet exported by WASM — from engine's params module
-const OSC_KEY_TRACKING = 4;
-const PITCH_OFFSET = 7;
-const STEREO_DETUNE = 8;
-// Phase osc node type and params
-const PHASE_OSC_TYPE = 5;
-const PO_SHAPE = 0;
-const PO_ALGORITHM = 1;
-const PO_FEEDBACK = 2;
-const PO_FORMANT = 3;
-const PO_KEY_TRACKING = 4;
-const PO_PITCH_RATIO_NUM = 5;
-const PO_PITCH_RATIO_DEN = 6;
-const PO_DETUNE = 9;
+/** Category → default body color used for port tints, etc. */
+const COLOR = {
+  osc:     [0.204, 0.667, 0.482] as [number, number, number],
+  mod:     [0.831, 0.627, 0.216] as [number, number, number],
+  util:    [0.227, 0.482, 0.835] as [number, number, number],
+  output:  [0.914, 0.271, 0.376] as [number, number, number],
+  filter:  [0.482, 0.369, 0.655] as [number, number, number],
+  lfo:     [0.788, 0.710, 0.184] as [number, number, number],
+  fx:      [0.176, 0.620, 0.620] as [number, number, number],
+  sampler: [0.620, 0.400, 0.176] as [number, number, number],
+};
 
-const oscInputs = () => [
-  { name: 'pitch in', dataType: audio, index: 0 },
-  { name: 'phase in', dataType: audio, index: 1 },
-  { name: 'retrig in', dataType: audio, index: 2 },
+function port(name: string, index: number): PortTemplate {
+  return { name, dataType: AUDIO, index };
+}
+
+function param(paramId: number, name: string, defaultValue: number, min: number, max: number, step: number): ParamTemplate {
+  return { paramId, name, defaultValue, min, max, step };
+}
+
+// Shared port/param groups — keep in sync with the engine's oscillator contract.
+const OSC_INPUTS: PortTemplate[] = [port('pitch in', 0), port('phase in', 1), port('retrig in', 2)];
+const OSC_OUTPUT: PortTemplate[] = [port('out', 0)];
+
+const oscBaseParams = (): ParamTemplate[] => [
+  param(param_freq(),   'freq',   440, 20, 20000, 1),
+  param(param_detune(), 'detune', 0,  -100, 100,  1),
 ];
 
-const oscExtraParams = () => [
-  { paramId: OSC_KEY_TRACKING, name: 'key trk', defaultValue: 1, min: 0, max: 1, step: 0.01 },
-  { paramId: PITCH_OFFSET, name: 'pitch ofs', defaultValue: 0, min: -48, max: 48, step: 1 },
-  { paramId: STEREO_DETUNE, name: 'stereo det', defaultValue: 0, min: 0, max: 1, step: 0.01 },
+const oscTailParams = (): ParamTemplate[] => [
+  param(param_osc_key_tracking(), 'key trk',    1,   0, 1,  0.01),
+  param(param_pitch_offset(),     'pitch ofs',  0, -48, 48, 1),
+  param(param_stereo_detune(),    'stereo det', 0,   0, 1,  0.01),
 ];
 
-const filterParams = () => [
-  { paramId: param_cutoff(), name: 'cutoff', defaultValue: 1000, min: 20, max: 20000, step: 1 },
-  { paramId: param_resonance(), name: 'resonance', defaultValue: 0.5, min: 0, max: 1, step: 0.01 },
-  { paramId: param_key_tracking(), name: 'key trk', defaultValue: 0, min: 0, max: 2, step: 0.01 },
+const filterInputs = (): PortTemplate[] => [port('in', 0), port('cut in', 1)];
+
+const filterParams = (): ParamTemplate[] => [
+  param(param_cutoff(),       'cutoff',    1000, 20, 20000, 1),
+  param(param_resonance(),    'resonance', 0.5,  0, 1,      0.01),
+  param(param_key_tracking(), 'key trk',   0,    0, 2,      0.01),
 ];
+
+function osc(type: string, label: string, typeId: number, extraParams: ParamTemplate[] = []): NodeTemplate {
+  return {
+    type, label, typeId,
+    inputs: OSC_INPUTS,
+    outputs: OSC_OUTPUT,
+    color: COLOR.osc,
+    params: [...oscBaseParams(), ...extraParams, ...oscTailParams()],
+  };
+}
+
+function filter(type: string, label: string, typeId: number): NodeTemplate {
+  return {
+    type, label, typeId,
+    inputs: filterInputs(),
+    outputs: OSC_OUTPUT,
+    color: COLOR.filter,
+    params: filterParams(),
+  };
+}
+
+function monoFx(type: string, label: string, typeId: number, params: ParamTemplate[]): NodeTemplate {
+  return {
+    type, label, typeId,
+    inputs: [port('in', 0)],
+    outputs: [port('out', 0)],
+    color: COLOR.fx,
+    params,
+  };
+}
 
 export function getNodeTemplates(): NodeTemplate[] {
   return [
     // Oscillators
+    osc('sine_osc',     'Sine Osc',   node_sine_osc()),
+    osc('saw_osc',      'Saw Osc',    node_saw_osc()),
+    osc('square_osc',   'Square Osc', node_square_osc(), [
+      param(param_pulse_width(), 'pw', 0.5, 0.01, 0.99, 0.01),
+    ]),
+    osc('triangle_osc', 'Tri Osc',    node_triangle_osc()),
+
+    // Phase-distortion osc — dedicated param set, no shared tail
     {
-      type: 'sine_osc', label: 'Sine Osc', typeId: node_sine_osc(),
-      inputs: oscInputs(), outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.204, 0.667, 0.482],
+      type: 'phase_osc', label: 'Phase Osc', typeId: node_phase_osc(),
+      inputs: OSC_INPUTS, outputs: OSC_OUTPUT,
+      color: COLOR.osc,
       params: [
-        { paramId: param_freq(), name: 'freq', defaultValue: 440, min: 20, max: 20000, step: 1 },
-        { paramId: param_detune(), name: 'detune', defaultValue: 0, min: -100, max: 100, step: 1 },
-        ...oscExtraParams(),
+        param(param_shape(),            'shape',     0, 0, 1,  0.01),
+        param(param_algorithm(),        'algorithm', 0, 0, 5,  1),
+        param(param_po_feedback(),      'feedback',  0, 0, 1,  0.01),
+        param(param_formant(),          'formant',   1, 1, 9,  1),
+        param(param_po_key_tracking(),  'key trk',   1, 0, 1,  0.01),
+        param(param_pitch_ratio_num(),  'ratio num', 1, 0, 99, 1),
+        param(param_pitch_ratio_den(),  'ratio den', 1, 1, 99, 1),
+        param(param_pitch_offset(),     'pitch ofs', 0, -48, 48, 1),
+        param(param_stereo_detune(),    'stereo det', 0, 0, 1, 0.01),
+        param(param_po_detune(),        'detune',    0, -27, 27, 0.1),
       ],
     },
-    {
-      type: 'saw_osc', label: 'Saw Osc', typeId: node_saw_osc(),
-      inputs: oscInputs(), outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.204, 0.667, 0.482],
-      params: [
-        { paramId: param_freq(), name: 'freq', defaultValue: 440, min: 20, max: 20000, step: 1 },
-        { paramId: param_detune(), name: 'detune', defaultValue: 0, min: -100, max: 100, step: 1 },
-        ...oscExtraParams(),
-      ],
-    },
-    {
-      type: 'square_osc', label: 'Square Osc', typeId: node_square_osc(),
-      inputs: oscInputs(), outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.204, 0.667, 0.482],
-      params: [
-        { paramId: param_freq(), name: 'freq', defaultValue: 440, min: 20, max: 20000, step: 1 },
-        { paramId: param_detune(), name: 'detune', defaultValue: 0, min: -100, max: 100, step: 1 },
-        { paramId: param_pulse_width(), name: 'pw', defaultValue: 0.5, min: 0.01, max: 0.99, step: 0.01 },
-        ...oscExtraParams(),
-      ],
-    },
-    {
-      type: 'triangle_osc', label: 'Tri Osc', typeId: node_triangle_osc(),
-      inputs: oscInputs(), outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.204, 0.667, 0.482],
-      params: [
-        { paramId: param_freq(), name: 'freq', defaultValue: 440, min: 20, max: 20000, step: 1 },
-        { paramId: param_detune(), name: 'detune', defaultValue: 0, min: -100, max: 100, step: 1 },
-        ...oscExtraParams(),
-      ],
-    },
-    // Phase Distortion Oscillator
-    {
-      type: 'phase_osc', label: 'Phase Osc', typeId: PHASE_OSC_TYPE,
-      inputs: oscInputs(), outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.204, 0.667, 0.482],
-      params: [
-        { paramId: PO_SHAPE, name: 'shape', defaultValue: 0, min: 0, max: 1, step: 0.01 },
-        { paramId: PO_ALGORITHM, name: 'algorithm', defaultValue: 0, min: 0, max: 5, step: 1 },
-        { paramId: PO_FEEDBACK, name: 'feedback', defaultValue: 0, min: 0, max: 1, step: 0.01 },
-        { paramId: PO_FORMANT, name: 'formant', defaultValue: 1, min: 1, max: 9, step: 1 },
-        { paramId: PO_KEY_TRACKING, name: 'key trk', defaultValue: 1, min: 0, max: 1, step: 0.01 },
-        { paramId: PO_PITCH_RATIO_NUM, name: 'ratio num', defaultValue: 1, min: 0, max: 99, step: 1 },
-        { paramId: PO_PITCH_RATIO_DEN, name: 'ratio den', defaultValue: 1, min: 1, max: 99, step: 1 },
-        { paramId: PITCH_OFFSET, name: 'pitch ofs', defaultValue: 0, min: -48, max: 48, step: 1 },
-        { paramId: STEREO_DETUNE, name: 'stereo det', defaultValue: 0, min: 0, max: 1, step: 0.01 },
-        { paramId: PO_DETUNE, name: 'detune', defaultValue: 0, min: -27, max: 27, step: 0.1 },
-      ],
-    },
+
     // Envelope
     {
       type: 'adsr_env', label: 'ADSR', typeId: node_adsr_env(),
-      inputs: [{ name: 'in', dataType: audio, index: 0 }],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.831, 0.627, 0.216],
+      inputs: [port('in', 0)], outputs: [port('out', 0)],
+      color: COLOR.mod,
       params: [
-        { paramId: param_attack(), name: 'attack', defaultValue: 0.01, min: 0.001, max: 10, step: 0.001 },
-        { paramId: param_decay(), name: 'decay', defaultValue: 0.1, min: 0.001, max: 10, step: 0.001 },
-        { paramId: param_sustain(), name: 'sustain', defaultValue: 0.7, min: 0, max: 1, step: 0.01 },
-        { paramId: param_release(), name: 'release', defaultValue: 0.3, min: 0.001, max: 10, step: 0.001 },
-        { paramId: param_attack_curve(), name: 'atk crv', defaultValue: 0.5, min: 0, max: 1, step: 0.01 },
-        { paramId: param_decay_curve(), name: 'dec crv', defaultValue: 0.5, min: 0, max: 1, step: 0.01 },
-        { paramId: param_release_curve(), name: 'rel crv', defaultValue: 0.5, min: 0, max: 1, step: 0.01 },
+        param(param_attack(),         'attack',  0.01, 0.001, 10, 0.001),
+        param(param_decay(),          'decay',   0.1,  0.001, 10, 0.001),
+        param(param_sustain(),        'sustain', 0.7,  0,     1,  0.01),
+        param(param_release(),        'release', 0.3,  0.001, 10, 0.001),
+        param(param_attack_curve(),   'atk crv', 0.5,  0,     1,  0.01),
+        param(param_decay_curve(),    'dec crv', 0.5,  0,     1,  0.01),
+        param(param_release_curve(),  'rel crv', 0.5,  0,     1,  0.01),
       ],
     },
+
     // Utility
     {
       type: 'gain', label: 'Gain', typeId: node_gain(),
-      inputs: [{ name: 'in', dataType: audio, index: 0 }],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.227, 0.482, 0.835],
-      params: [{ paramId: param_gain(), name: 'gain', defaultValue: 0, min: -60, max: 12, step: 0.1 }],
+      inputs: [port('in', 0)], outputs: [port('out', 0)],
+      color: COLOR.util,
+      params: [param(param_gain(), 'gain', 0, -60, 12, 0.1)],
     },
     {
       type: 'pan', label: 'Pan', typeId: node_pan(),
-      inputs: [{ name: 'in', dataType: audio, index: 0 }],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.227, 0.482, 0.835],
-      params: [{ paramId: param_pan(), name: 'pan', defaultValue: 0, min: -1, max: 1, step: 0.01 }],
+      inputs: [port('in', 0)], outputs: [port('out', 0)],
+      color: COLOR.util,
+      params: [param(param_pan(), 'pan', 0, -1, 1, 0.01)],
     },
     {
       type: 'mixer', label: 'Mixer', typeId: node_mixer(),
-      inputs: [{ name: 'in', dataType: audio, index: 0 }],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.227, 0.482, 0.835],
-      params: [{ paramId: param_gain(), name: 'gain', defaultValue: 0, min: -60, max: 12, step: 0.1 }],
+      inputs: [port('in', 0)], outputs: [port('out', 0)],
+      color: COLOR.util,
+      params: [param(param_gain(), 'gain', 0, -60, 12, 0.1)],
     },
     {
       type: 'output', label: 'Output', typeId: node_output(),
-      inputs: [
-        { name: 'L', dataType: audio, index: 0 },
-        { name: 'R', dataType: audio, index: 1 },
-      ],
+      inputs: [port('L', 0), port('R', 1)],
       outputs: [],
-      color: [0.914, 0.271, 0.376],
-      params: [{ paramId: param_gain(), name: 'master', defaultValue: 0, min: -60, max: 6, step: 0.1 }],
+      color: COLOR.output,
+      params: [param(param_gain(), 'master', 0, -60, 6, 0.1)],
     },
+
     // Filters
-    {
-      type: 'lowpass', label: 'Lowpass', typeId: node_lowpass(),
-      inputs: [
-        { name: 'in', dataType: audio, index: 0 },
-        { name: 'cut in', dataType: audio, index: 1 },
-      ],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.482, 0.369, 0.655], params: filterParams(),
-    },
-    {
-      type: 'highpass', label: 'Highpass', typeId: node_highpass(),
-      inputs: [
-        { name: 'in', dataType: audio, index: 0 },
-        { name: 'cut in', dataType: audio, index: 1 },
-      ],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.482, 0.369, 0.655], params: filterParams(),
-    },
-    {
-      type: 'bandpass', label: 'Bandpass', typeId: node_bandpass(),
-      inputs: [
-        { name: 'in', dataType: audio, index: 0 },
-        { name: 'cut in', dataType: audio, index: 1 },
-      ],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.482, 0.369, 0.655], params: filterParams(),
-    },
-    {
-      type: 'notch', label: 'Notch', typeId: node_notch(),
-      inputs: [
-        { name: 'in', dataType: audio, index: 0 },
-        { name: 'cut in', dataType: audio, index: 1 },
-      ],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.482, 0.369, 0.655], params: filterParams(),
-    },
+    filter('lowpass',  'Lowpass',  node_lowpass()),
+    filter('highpass', 'Highpass', node_highpass()),
+    filter('bandpass', 'Bandpass', node_bandpass()),
+    filter('notch',    'Notch',    node_notch()),
+
     // Modulation
     {
       type: 'lfo', label: 'LFO', typeId: node_lfo(),
-      inputs: [],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.788, 0.710, 0.184],
+      inputs: [], outputs: [port('out', 0)],
+      color: COLOR.lfo,
       params: [
-        { paramId: param_rate(), name: 'rate', defaultValue: 1, min: 0.01, max: 100, step: 0.01 },
-        { paramId: param_depth(), name: 'depth', defaultValue: 1, min: 0, max: 1, step: 0.01 },
-        { paramId: param_waveform(), name: 'wave', defaultValue: 0, min: 0, max: 4, step: 1 },
+        param(param_rate(),     'rate',  1, 0.01, 100, 0.01),
+        param(param_depth(),    'depth', 1, 0,    1,   0.01),
+        param(param_waveform(), 'wave',  0, 0,    4,   1),
       ],
     },
     {
       type: 'transport', label: 'Transport', typeId: node_transport(),
       inputs: [],
-      outputs: [
-        { name: 'phase', dataType: audio, index: 0 },
-        { name: 'trigger', dataType: audio, index: 1 },
-      ],
-      color: [0.788, 0.710, 0.184],
+      outputs: [port('phase', 0), port('trigger', 1)],
+      color: COLOR.lfo,
       params: [
-        { paramId: param_rate(), name: 'rate', defaultValue: 1, min: 0.0625, max: 16, step: 0.0625 },
-        { paramId: param_mode(), name: 'mode', defaultValue: 0, min: 0, max: 1, step: 1 },
+        param(param_rate(), 'rate', 1, 0.0625, 16, 0.0625),
+        param(param_mode(), 'mode', 0, 0,      1,  1),
       ],
     },
+
     // Effects
-    {
-      type: 'delay', label: 'Delay', typeId: node_delay(),
-      inputs: [{ name: 'in', dataType: audio, index: 0 }],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.176, 0.620, 0.620],
-      params: [
-        { paramId: param_time(), name: 'time', defaultValue: 0.25, min: 0.001, max: 2, step: 0.01 },
-        { paramId: param_feedback(), name: 'feedback', defaultValue: 0.4, min: 0, max: 0.99, step: 0.01 },
-        { paramId: param_mix(), name: 'mix', defaultValue: 0.5, min: 0, max: 1, step: 0.01 },
-      ],
-    },
-    {
-      type: 'reverb', label: 'Reverb', typeId: node_reverb(),
-      inputs: [{ name: 'in', dataType: audio, index: 0 }],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.176, 0.620, 0.620],
-      params: [
-        { paramId: param_reverb_decay(), name: 'decay', defaultValue: 0.5, min: 0, max: 0.99, step: 0.01 },
-        { paramId: param_damping(), name: 'damping', defaultValue: 0.5, min: 0, max: 1, step: 0.01 },
-        { paramId: param_mix(), name: 'mix', defaultValue: 0.3, min: 0, max: 1, step: 0.01 },
-      ],
-    },
+    monoFx('delay', 'Delay', node_delay(), [
+      param(param_time(),     'time',     0.25, 0.001, 2,    0.01),
+      param(param_feedback(), 'feedback', 0.4,  0,     0.99, 0.01),
+      param(param_mix(),      'mix',      0.5,  0,     1,    0.01),
+    ]),
+    monoFx('reverb', 'Reverb', node_reverb(), [
+      param(param_reverb_decay(), 'decay',   0.5, 0, 0.99, 0.01),
+      param(param_damping(),      'damping', 0.5, 0, 1,    0.01),
+      param(param_mix(),          'mix',     0.3, 0, 1,    0.01),
+    ]),
+
     // Samplers
     {
       type: 'audio_player', label: 'Audio Player', typeId: node_audio_player(),
-      inputs: [{ name: 'in', dataType: audio, index: 0 }],
-      outputs: [{ name: 'out', dataType: audio, index: 0 }],
-      color: [0.620, 0.400, 0.176],
-      params: [{ paramId: param_gain(), name: 'gain', defaultValue: 1, min: 0, max: 2, step: 0.01 }],
+      inputs: [port('in', 0)], outputs: [port('out', 0)],
+      color: COLOR.sampler,
+      params: [param(param_gain(), 'gain', 1, 0, 2, 0.01)],
     },
   ];
 }

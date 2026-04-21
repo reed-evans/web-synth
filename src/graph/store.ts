@@ -1,11 +1,9 @@
 import { createStore, produce } from 'solid-js/store';
 import { createSignal } from 'solid-js';
-import type { GraphNode, Edge, NodeTemplate, PendingEdge, ModRoute } from './types';
+import type { GraphNode, Edge, NodeTemplate, PendingEdge, ModRoute, Port } from './types';
 import { NODE_WIDTH } from './types';
 import type { AudioState } from '../audio';
-
-let nextId = 1;
-const genId = () => String(nextId++);
+import { sendCommand } from './commands';
 
 export interface GraphData {
   nodes: GraphNode[];
@@ -13,50 +11,77 @@ export interface GraphData {
   modRoutes: ModRoute[];
 }
 
+function createIdGenerator(): () => string {
+  let n = 1;
+  return () => String(n++);
+}
+
+function instantiate(template: NodeTemplate, id: string, genId: () => string, x: number, y: number): GraphNode {
+  const mapPorts = (defs: NodeTemplate['inputs'], type: Port['type']): Port[] =>
+    defs.map(p => ({ id: genId(), name: p.name, type, dataType: p.dataType, index: p.index }));
+
+  return {
+    id,
+    typeId: template.typeId,
+    type: template.type,
+    label: template.label,
+    x, y,
+    width: NODE_WIDTH,
+    inputs: mapPorts(template.inputs, 'input'),
+    outputs: mapPorts(template.outputs, 'output'),
+    color: template.color,
+    params: template.params.map(p => ({
+      paramId: p.paramId,
+      name: p.name,
+      value: p.defaultValue,
+      min: p.min,
+      max: p.max,
+      step: p.step,
+    })),
+  };
+}
+
 export function createGraphStore(audio: AudioState) {
   const [graph, setGraph] = createStore<GraphData>({ nodes: [], edges: [], modRoutes: [] });
   const [selectedNodeId, setSelectedNodeId] = createSignal<string | null>(null);
   const [pendingEdge, setPendingEdge] = createSignal<PendingEdge | null>(null);
 
+  const genId = createIdGenerator();
+  const send = (cmd: Parameters<typeof sendCommand>[1]) => sendCommand(audio, cmd);
+
+  const findEdgeEndpoints = (edge: Edge) => {
+    const srcNode = graph.nodes.find(n => n.id === edge.from.nodeId);
+    const dstNode = graph.nodes.find(n => n.id === edge.to.nodeId);
+    const srcPort = srcNode?.outputs.find(p => p.id === edge.from.portId);
+    const dstPort = dstNode?.inputs.find(p => p.id === edge.to.portId);
+    if (!srcNode || !dstNode || !srcPort || !dstPort) return null;
+    return { srcNode, dstNode, srcPort, dstPort };
+  };
+
+  const disconnectEdge = (edge: Edge) => {
+    const ends = findEdgeEndpoints(edge);
+    if (!ends) return;
+    send({
+      type: 'disconnect',
+      srcUiId: ends.srcNode.id, srcPort: ends.srcPort.index,
+      dstUiId: ends.dstNode.id, dstPort: ends.dstPort.index,
+    });
+  };
+
   const actions = {
     addNode(template: NodeTemplate, x: number, y: number) {
       const id = genId();
+      const node = instantiate(template, id, genId, x, y);
 
-      const node: GraphNode = {
-        id,
-        typeId: template.typeId,
-        type: template.type,
-        label: template.label,
-        x, y,
-        width: NODE_WIDTH,
-        inputs: template.inputs.map(inp => ({
-          id: genId(), name: inp.name, type: 'input' as const,
-          dataType: inp.dataType, index: inp.index,
-        })),
-        outputs: template.outputs.map(out => ({
-          id: genId(), name: out.name, type: 'output' as const,
-          dataType: out.dataType, index: out.index,
-        })),
-        color: template.color,
-        data: {},
-        params: template.params.map(p => ({
-          paramId: p.paramId, name: p.name,
-          value: p.defaultValue, min: p.min, max: p.max, step: p.step,
-        })),
-      };
-
-      // Send to worklet
-      audio.send({ type: 'add_node', uiId: id, typeId: template.typeId, x, y });
-
+      send({ type: 'add_node', uiId: id, typeId: template.typeId, x, y });
       for (const p of node.params) {
-        audio.send({ type: 'set_param', uiId: id, paramId: p.paramId, value: p.value });
+        send({ type: 'set_param', uiId: id, paramId: p.paramId, value: p.value });
       }
-
       if (template.type === 'output') {
-        audio.send({ type: 'set_output', uiId: id });
+        send({ type: 'set_output', uiId: id });
       }
 
-      setGraph('nodes', n => [...n, node]);
+      setGraph('nodes', ns => [...ns, node]);
     },
 
     moveNode(id: string, x: number, y: number) {
@@ -79,13 +104,13 @@ export function createGraphStore(audio: AudioState) {
       const dstPort = dstNode?.inputs.find(p => p.id === toPortId);
       if (!srcNode || !dstNode || !srcPort || !dstPort) return;
 
-      audio.send({
+      send({
         type: 'connect',
         srcUiId: fromNodeId, srcPort: srcPort.index,
         dstUiId: toNodeId, dstPort: dstPort.index,
       });
 
-      setGraph('edges', e => [...e, {
+      setGraph('edges', es => [...es, {
         id: genId(),
         from: { nodeId: fromNodeId, portId: fromPortId },
         to: { nodeId: toNodeId, portId: toPortId },
@@ -93,31 +118,15 @@ export function createGraphStore(audio: AudioState) {
     },
 
     removeNode(id: string) {
-      // Disconnect all edges touching this node
       for (const edge of graph.edges) {
-        if (edge.from.nodeId === id || edge.to.nodeId === id) {
-          const srcNode = graph.nodes.find(n => n.id === edge.from.nodeId);
-          const dstNode = graph.nodes.find(n => n.id === edge.to.nodeId);
-          const srcPort = srcNode?.outputs.find(p => p.id === edge.from.portId);
-          const dstPort = dstNode?.inputs.find(p => p.id === edge.to.portId);
-          if (srcNode && dstNode && srcPort && dstPort) {
-            audio.send({
-              type: 'disconnect',
-              srcUiId: srcNode.id, srcPort: srcPort.index,
-              dstUiId: dstNode.id, dstPort: dstPort.index,
-            });
-          }
-        }
+        if (edge.from.nodeId === id || edge.to.nodeId === id) disconnectEdge(edge);
       }
-
-      // Remove mod routes touching this node
       for (const route of graph.modRoutes) {
         if (route.sourceNodeId === id || route.destNodeId === id) {
-          audio.send({ type: 'remove_mod_route', routeId: route.id });
+          send({ type: 'remove_mod_route', routeId: route.id });
         }
       }
-
-      audio.send({ type: 'remove_node', uiId: id });
+      send({ type: 'remove_node', uiId: id });
 
       setGraph(produce(g => {
         g.modRoutes = g.modRoutes.filter(m => m.sourceNodeId !== id && m.destNodeId !== id);
@@ -129,24 +138,12 @@ export function createGraphStore(audio: AudioState) {
     removeEdgeByInput(toNodeId: string, toPortId: string) {
       const edge = graph.edges.find(e => e.to.nodeId === toNodeId && e.to.portId === toPortId);
       if (!edge) return;
-
-      const srcNode = graph.nodes.find(n => n.id === edge.from.nodeId);
-      const dstNode = graph.nodes.find(n => n.id === edge.to.nodeId);
-      const srcPort = srcNode?.outputs.find(p => p.id === edge.from.portId);
-      const dstPort = dstNode?.inputs.find(p => p.id === edge.to.portId);
-      if (srcNode && dstNode && srcPort && dstPort) {
-        audio.send({
-          type: 'disconnect',
-          srcUiId: srcNode.id, srcPort: srcPort.index,
-          dstUiId: dstNode.id, dstPort: dstPort.index,
-        });
-      }
-
-      setGraph('edges', e => e.filter(e => e.to.nodeId !== toNodeId || e.to.portId !== toPortId));
+      disconnectEdge(edge);
+      setGraph('edges', es => es.filter(e => e.id !== edge.id));
     },
 
     setParam(nodeId: string, paramId: number, value: number) {
-      audio.send({ type: 'set_param', uiId: nodeId, paramId, value });
+      send({ type: 'set_param', uiId: nodeId, paramId, value });
       setGraph(produce(g => {
         const n = g.nodes.find(n => n.id === nodeId);
         const p = n?.params.find(p => p.paramId === paramId);
@@ -156,7 +153,7 @@ export function createGraphStore(audio: AudioState) {
 
     addModRoute(sourceNodeId: string, sourcePort: number, destNodeId: string, destParam: number, depth: number) {
       const id = genId();
-      audio.send({
+      send({
         type: 'add_mod_route',
         routeId: id,
         srcUiId: sourceNodeId, srcPort: sourcePort,
@@ -164,17 +161,17 @@ export function createGraphStore(audio: AudioState) {
         depth,
       });
       const route: ModRoute = { id, sourceNodeId, sourcePort, destNodeId, destParam, depth };
-      setGraph('modRoutes', r => [...r, route]);
+      setGraph('modRoutes', rs => [...rs, route]);
       return id;
     },
 
     removeModRoute(routeId: string) {
-      audio.send({ type: 'remove_mod_route', routeId });
-      setGraph('modRoutes', r => r.filter(m => m.id !== routeId));
+      send({ type: 'remove_mod_route', routeId });
+      setGraph('modRoutes', rs => rs.filter(m => m.id !== routeId));
     },
 
     setModDepth(routeId: string, depth: number) {
-      audio.send({ type: 'set_mod_depth', routeId, depth });
+      send({ type: 'set_mod_depth', routeId, depth });
       setGraph(produce(g => {
         const r = g.modRoutes.find(m => m.id === routeId);
         if (r) r.depth = depth;

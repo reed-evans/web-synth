@@ -1,5 +1,9 @@
+import './styles/reset.css';
+import './styles/tokens.css';
+import './styles/global.css';
+
 import { render } from 'solid-js/web';
-import { createSignal, Show } from 'solid-js';
+import { createSignal, onMount, Show } from 'solid-js';
 import { initAudio, type AudioState } from './audio';
 import GraphCanvas from './graph/GraphCanvas';
 
@@ -7,16 +11,18 @@ function App() {
   const [audio, setAudio] = createSignal<AudioState | null>(null);
   const [error, setError] = createSignal<string | null>(null);
 
-  initAudio()
-    .then(a => setAudio(a))
-    .catch(e => setError(String(e)));
+  onMount(() => {
+    initAudio()
+      .then(setAudio)
+      .catch(e => setError(e instanceof Error ? e.message : String(e)));
+  });
 
   return (
     <Show
       when={audio()}
       fallback={
-        <div style={{ color: '#e0e0e0', font: '14px monospace' }}>
-          {error() ? `Error: ${error()}` : 'Loading audio engine...'}
+        <div class="boot-status">
+          {error() ? `Error: ${error()}` : 'Loading audio engine…'}
         </div>
       }
     >
@@ -25,4 +31,6 @@ function App() {
   );
 }
 
-render(() => <App />, document.getElementById('app')!);
+const mount = document.getElementById('app');
+if (!mount) throw new Error('#app mount point missing from index.html');
+render(() => <App />, mount);
